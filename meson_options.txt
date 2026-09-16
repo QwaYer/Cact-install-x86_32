@@ -1,0 +1,14 @@
+option('cactlib', type: 'string', value: '../CactLibc-x86_32',
+  description: 'CactLibc project root, relative to this repo or absolute')
+
+option('lr_sbin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/sbin',
+  description: 'staging /sbin directory used by the stage target, relative or absolute')
+
+option('lr_lib', type: 'string', value: '../LocalRepoCactOS-x86_32/lib',
+  description: 'staging /lib directory used by the stage-media target, relative or absolute')
+
+option('lr_repo', type: 'string', value: '../LocalRepoCactOS-x86_32',
+  description: 'LocalRepoCactOS root holding cctkfs.img, relative or absolute')
+
+option('kern_build', type: 'string', value: '../CactKernel-x86_32/build-meson',
+  description: 'kernel Meson build directory holding kernel.bin, relative or absolute')
