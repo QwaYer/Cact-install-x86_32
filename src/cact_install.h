@@ -21,12 +21,11 @@
 
 #define MNT_ROOT "/tmp/cactroot"
 #define MNT_SRC  "/tmp/cactsrc"
+#define MNT_ESP  MNT_ROOT "/boot/efi"
 
 struct ci_disk {
     char      name[16];
     char      base[32];
-    char      data[40];
-    char      status[40];
     uint64_t  sectors;
 };
 
@@ -62,8 +61,8 @@ struct ci_fdisk_cmd {
 /* ui.c */
 void ci_term_init(void);
 void ci_term_done(void);
-int  ci_menu(const char *title, const char **items, int n);
-int  ci_confirm(const char *q, int def);
+int  ci_menu(const char *title, const char **items, int n); /* >0 pick, 0 back, -1 input lost */
+int  ci_confirm(const char *q, int def);                   /* 1 yes, 0 no, -1 input lost */
 int  ci_prompt(const char *q, char *buf, int size);
 long ci_prompt_num(const char *q, long def);
 void ci_press(void);
@@ -82,8 +81,8 @@ int  ci_umount(const char *dev_or_mnt);
 /* disk.c */
 int      ci_list_disks(struct ci_disk *out, int max);
 int      ci_disk_parts(const struct ci_disk *d, struct ci_partdev *out, int max);
-uint64_t ci_probe_capacity(const char *data_path);
-int      ci_read_status(const char *path, char *buf, int max);
+int      ci_disk_rescan(const struct ci_disk *d);
+uint64_t ci_probe_capacity(const char *node_path);
 
 /* layout.c */
 int ci_layout_guided(const struct ci_disk *d, int scheme, long esp_mib,

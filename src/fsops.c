@@ -71,6 +71,8 @@ int ci_copy_file(const char *src, const char *dst) {
     struct stat st;
     if (stat(src, &st) != 0)
         return -1;
+    if (S_ISDIR(st.st_mode))
+        return -1;                 /* callers copy files only */
     int in = open(src, O_RDONLY);
     if (in < 0)
         return -1;

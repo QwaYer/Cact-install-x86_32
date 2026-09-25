@@ -82,6 +82,19 @@ int ci_layout_guided(const struct ci_disk *d, int scheme, long esp_mib,
     } else if (scheme == SCHEME_GPT_EFI) {
         if (esp_mib < 8)
             esp_mib = 512;
+        /* keep the ESP plus 1 MiB alignment slack, and leave room for root */
+        uint64_t cap_mib = cap / 2048u;
+        if (cap_mib < 24) {
+            printf("disk %s too small for an EFI layout (%u MiB)\n",
+                   d->name, (unsigned)cap_mib);
+            return -1;
+        }
+        if ((uint64_t)esp_mib > cap_mib - 8) {
+            printf("%ld MiB ESP does not fit on a %u MiB disk "
+                   "(max %u MiB)\n", esp_mib, (unsigned)cap_mib,
+                   (unsigned)(cap_mib - 8));
+            return -1;
+        }
         uint64_t esp_sectors = (uint64_t)esp_mib * 2048u;
         if (2048u + esp_sectors + 2048u >= cap) {
             printf("disk %s too small for a %ld MiB ESP\n", d->name, esp_mib);
@@ -90,7 +103,7 @@ int ci_layout_guided(const struct ci_disk *d, int scheme, long esp_mib,
         plan->nparts = 2;
         plan->root_idx = 1;
         plan->esp_idx = 0;
-        part_set(&plan->parts[0], 1, ROLE_ESP, PT_FAT32, MNT_ROOT "/boot");
+        part_set(&plan->parts[0], 1, ROLE_ESP, PT_FAT32, MNT_ESP);
         part_set(&plan->parts[1], 2, ROLE_ROOT, PT_EXT4, MNT_ROOT);
         char esp_arg[24];
         snprintf(esp_arg, sizeof(esp_arg), "+%ldM", esp_mib);
@@ -221,7 +234,7 @@ int ci_layout_manual(const struct ci_disk *d, struct ci_plan *plan,
         } else {
             plan->esp_idx = plan->nparts;
             snprintf(p->fstype, sizeof(p->fstype), "%s", PT_FAT32);
-            snprintf(p->mnt, sizeof(p->mnt), "%s" "/boot", MNT_ROOT);
+            snprintf(p->mnt, sizeof(p->mnt), "%s", MNT_ESP);
         }
         plan->nparts++;
     }

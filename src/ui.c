@@ -49,14 +49,40 @@ static int read_line_canonical(const char *prompt, char *buf, int size) {
     return (int)strlen(buf);
 }
 
+/* Repaint an edited line.  This console has no '\b' and no erase-to-EOL, so
+ * the tail is overwritten with spaces and the cursor is brought back with
+ * '\r' — the same technique the shell uses. */
+static void redraw_raw(const char *prompt, const char *buf, int len,
+                       int prev_len) {
+    if (!prompt)
+        return;
+    int max = len > prev_len ? len : prev_len;
+    out("\r");
+    out(prompt);
+    if (len > 0)
+        write(STDOUT_FILENO, buf, (size_t)len);
+    for (int i = len; i < max + 1; i++)
+        write(STDOUT_FILENO, " ", 1);
+    out("\r");
+    out(prompt);
+    if (len > 0)
+        write(STDOUT_FILENO, buf, (size_t)len);
+}
+
 static int read_line_raw(const char *prompt, char *buf, int size) {
     int n = 0;
+    int shown = 0;                 /* characters currently on screen */
+    if (prompt)
+        out(prompt);
     for (;;) {
         char c;
         ssize_t r = read(STDIN_FILENO, &c, 1);
         if (r <= 0) {
-            if (n == 0)
+            if (n == 0) {
+                if (prompt)
+                    out("\n");
                 return -1;
+            }
             break;
         }
         if (c == '\n' || c == '\r') {
@@ -64,13 +90,10 @@ static int read_line_raw(const char *prompt, char *buf, int size) {
             break;
         }
         if (c == '\b' || c == 0x7f) {
-            if (n > 0 && prompt) {
+            if (n > 0) {
                 n--;
-                out("\r");
-                out(prompt);
-                if (n)
-                    write(STDOUT_FILENO, buf, (size_t)n);
-                out("\x1b[K");
+                redraw_raw(prompt, buf, n, shown);
+                shown = n;
             }
             continue;
         }
@@ -79,6 +102,7 @@ static int read_line_raw(const char *prompt, char *buf, int size) {
         if (n < size - 1) {
             buf[n++] = c;
             write(STDOUT_FILENO, &c, 1);
+            shown = n;
         }
     }
     buf[n] = '\0';
@@ -125,7 +149,7 @@ int ci_menu(const char *title, const char **items, int n) {
         char q[48];
         snprintf(q, sizeof(q), "Choice [1-%d, 0 = back]: ", n);
         if (read_line(q, buf, sizeof(buf)) < 0)
-            return 0;
+            return -1;             /* input lost: no more choices possible */
         if (!buf[0])
             continue;
         char *end;
@@ -145,7 +169,7 @@ int ci_confirm(const char *q, int def) {
         snprintf(label, sizeof(label), "%s %s", q, def ? "[Y/n] " : "[y/N] ");
         char buf[16];
         if (read_line(label, buf, sizeof(buf)) < 0)
-            return def;
+            return -1;             /* input lost: let the caller unwind */
         if (!buf[0])
             return def;
         if (buf[0] == 'y' || buf[0] == 'Y')
