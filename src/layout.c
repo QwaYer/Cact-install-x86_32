@@ -166,7 +166,7 @@ void ci_plan_print(const struct ci_plan *plan) {
 int ci_run_fdisk(const struct ci_disk *d, const struct ci_fdisk_cmd *cmd) {
     char *argv[48];
     int n = 0;
-    argv[n++] = (char *)"/sbin/fdisk";
+    argv[n++] = (char *)"/usr/sbin/fdisk";
     argv[n++] = (char *)d->base;
     if (cmd) {
         for (int i = 0; i < cmd->n && n < 46; i++)
@@ -180,7 +180,7 @@ int ci_run_fdisk(const struct ci_disk *d, const struct ci_fdisk_cmd *cmd) {
     }
     printf("\n");
     fflush(stdout);
-    return ci_exec("/sbin/fdisk", argv);
+    return ci_exec("/usr/sbin/fdisk", argv);
 }
 
 static int prompt_role(const char *name) {

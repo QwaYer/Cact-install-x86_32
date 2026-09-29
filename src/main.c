@@ -7,13 +7,13 @@
 #include <fcntl.h>
 #include <stat.h>
 
-#define PAYLOAD_BOOT    "/lib/cact-install/boot"
-#define PAYLOAD_GRUB    "/lib/cact-install/grub"
+#define PAYLOAD_BOOT    "/usr/lib/cact-install/boot"
+#define PAYLOAD_GRUB    "/usr/lib/cact-install/grub"
 
-#define TOOL_FDISK      "/sbin/fdisk"
-#define TOOL_MKFS_EXT4  "/sbin/mkfs.ext4"
-#define TOOL_MKFS_FAT32 "/sbin/mkfs.fat32"
-#define TOOL_ROOTFS     "/sbin/cact-rootfs"
+#define TOOL_FDISK      "/usr/sbin/fdisk"
+#define TOOL_MKFS_EXT4  "/usr/sbin/mkfs.ext4"
+#define TOOL_MKFS_FAT32 "/usr/sbin/mkfs.fat32"
+#define TOOL_ROOTFS     "/usr/sbin/cact-rootfs"
 
 /* Wizard step results. */
 #define W_NEXT  1
@@ -65,8 +65,8 @@ static void fmt_size(uint64_t sectors, char *out, int n) {
 
 static void ensure_modules(void) {
     printf("[0] loading filesystem modules\n");
-    module_load("/lib/ext4.cctk", (unsigned)-1, (unsigned)-1);
-    module_load("/lib/fat32.cctk", (unsigned)-1, (unsigned)-1);
+    module_load("/usr/lib/modules/ext4.cctk", (unsigned)-1, (unsigned)-1);
+    module_load("/usr/lib/modules/fat32.cctk", (unsigned)-1, (unsigned)-1);
 }
 
 static void print_parts(const struct ci_disk *d) {
