@@ -7,8 +7,8 @@ option('lr_sbin', type: 'string', value: '../LocalRepoCactOS-x86_32/lib/sbin',
 option('lr_lib', type: 'string', value: '../LocalRepoCactOS-x86_32/lib',
   description: 'staging /lib directory used by the stage-media target, relative or absolute')
 
-option('lr_repo', type: 'string', value: '../LocalRepoCactOS-x86_32',
-  description: 'LocalRepoCactOS root holding cctkfs.img, relative or absolute')
-
 option('kern_build', type: 'string', value: '../CactKernel-x86_32/build-meson',
   description: 'kernel Meson build directory holding kernel.bin, relative or absolute')
+
+option('zstd_dir', type: 'string', value: '../CactKernel-x86_32/Cact/drivers/zstd',
+  description: 'vendored zstd sources shared with the kernel tree; archive.c links them (the linker drops them while nothing calls it)')

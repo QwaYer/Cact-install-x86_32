@@ -81,27 +81,34 @@ int ci_copy_file(const char *src, const char *dst) {
         close(in);
         return -1;
     }
+    /* Read to EOF, not to st.st_size: a source that cannot report its size — a
+     * device such as /dev/localrepo — reports 0, and a size-driven loop would
+     * copy nothing while returning success, leaving an empty destination. */
     char buf[4096];
-    uint32_t left = (uint32_t)st.st_size;
-    while (left) {
-        uint32_t want = left < sizeof(buf) ? left : (uint32_t)sizeof(buf);
-        ssize_t n = read(in, buf, want);
-        if (n <= 0)
-            break;
+    uint32_t total = 0;
+    int rc = 0;
+    for (;;) {
+        ssize_t n = read(in, buf, sizeof(buf));
+        if (n < 0) { rc = -1; break; }
+        if (n == 0) break;
         ssize_t off = 0;
         while (off < n) {
             ssize_t w = write(out, buf + off, (size_t)(n - off));
-            if (w <= 0) {
-                close(in);
-                close(out);
-                return -1;
-            }
+            if (w <= 0) { rc = -1; break; }
             off += w;
         }
-        left -= (uint32_t)n;
+        if (rc != 0)
+            break;
+        total += (uint32_t)n;
     }
     close(in);
     close(out);
+    if (rc != 0 || total == 0) {
+        /* Never leave a partial — or empty — copy behind: the caller cannot
+         * tell it apart from a good one once the file exists. */
+        unlink(dst);
+        return -1;
+    }
     chmod(dst, st.st_mode & 07777);
     return 0;
 }

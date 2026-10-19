@@ -10,10 +10,79 @@
 #define PAYLOAD_BOOT    "/usr/lib/cact-install/boot"
 #define PAYLOAD_GRUB    "/usr/lib/cact-install/grub"
 
+/* The boot cctkfs module, served in place by the kernel.  It publishes its size
+ * (0 = this medium carried no module), so it is the one image guaranteed to
+ * match the system the installer is running on — which is why the media bundle
+ * does not carry a copy of it: a copy would be a stale image, and packing it
+ * into cctkfs.img would nest the image inside itself. */
+#define IMAGE_DEV       "/dev/cctkfs"
+
 #define TOOL_FDISK      "/usr/sbin/fdisk"
 #define TOOL_MKFS_EXT4  "/usr/sbin/mkfs.ext4"
 #define TOOL_MKFS_FAT32 "/usr/sbin/mkfs.fat32"
 #define TOOL_ROOTFS     "/usr/sbin/cact-rootfs"
+#define TOOL_FIRMEXTR   "/usr/bin/firmextr"
+
+/* The installer media (boot/kernel.bin, grub/) is baked into cctkfs.img, so the
+ * bundled path below is the normal case; g_boot_dir/g_grub_dir point at it, or
+ * at a work dir firmextr filled from an older localrepo archive that still
+ * carried the media.  The image to install comes from /dev/cctkfs. */
+static char g_boot_dir[256] = PAYLOAD_BOOT;
+static char g_grub_dir[256] = PAYLOAD_GRUB;
+
+#define LOCALREPO_WORK  "/tmp/cact-install-payload"
+
+static const char *localrepo_candidates[] = {
+    "/tmp/localrepo.tar.zst",   /* cgoct staged it into tmpfs at boot */
+    "/dev/localrepo",           /* GRUB module, served by the kernel */
+    "/localrepo.tar.zst",
+    "/boot/localrepo.tar.zst",
+    NULL
+};
+
+/* A candidate is only an archive if it carries bytes: an empty /dev/localrepo
+ * (a boot medium whose GRUB did not hand the module over) or a zero-length file
+ * would otherwise be picked and streamed as an empty archive. */
+static int localrepo_has_data(const char *path) {
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return 0;
+    if (S_ISREG(st.st_mode) || S_ISCHR(st.st_mode))
+        return st.st_size > 0;
+    return 1;
+}
+
+static const char *find_localrepo(void) {
+    for (int i = 0; localrepo_candidates[i]; i++)
+        if (localrepo_has_data(localrepo_candidates[i]))
+            return localrepo_candidates[i];
+    return NULL;
+}
+
+/* Stream the installer media out of the archive (only that subtree) into a
+ * work dir; both firmextr and cact-install read the same archive. */
+static int payload_from_archive(void) {
+    const char *arc = find_localrepo();
+    if (!arc)
+        return 0;
+    if (!ci_file_exists(TOOL_FIRMEXTR)) {
+        printf("%s not found — cannot read the archive\n", TOOL_FIRMEXTR);
+        return 0;
+    }
+    printf("extracting installer payload from %s\n", arc);
+    char *argv[] = { (char *)"firmextr", (char *)"-f", (char *)arc,
+                     (char *)"-C", (char *)LOCALREPO_WORK,
+                     (char *)"usr/lib/cact-install/", NULL };
+    if (ci_exec(TOOL_FIRMEXTR, argv) != 0) {
+        printf("firmextr failed on %s\n", arc);
+        return 0;
+    }
+    snprintf(g_boot_dir, sizeof(g_boot_dir),
+             LOCALREPO_WORK "/usr/lib/cact-install/boot");
+    snprintf(g_grub_dir, sizeof(g_grub_dir),
+             LOCALREPO_WORK "/usr/lib/cact-install/grub");
+    return 1;
+}
 
 /* Wizard step results. */
 #define W_NEXT  1
@@ -89,11 +158,24 @@ static void print_parts(const struct ci_disk *d) {
 
 /* ── payload location ─────────────────────────────────────────────────── */
 
+/* The image to install: the module the kernel was booted from, served in place
+ * as /dev/cctkfs.  A bundled copy is only a fallback, for media built the old
+ * way (localrepo carried the installer payload). */
+static const char *find_boot_image(void) {
+    static char bundled[256];
+    struct stat st;
+    if (stat(IMAGE_DEV, &st) == 0 && st.st_size > 0)
+        return IMAGE_DEV;
+    snprintf(bundled, sizeof(bundled), "%s/cctkfs.img", g_boot_dir);
+    if (ci_file_exists(bundled))
+        return bundled;
+    return NULL;
+}
+
 static int check_payload(void) {
-    char k[256], i[256];
-    snprintf(k, sizeof(k), PAYLOAD_BOOT "/kernel.bin");
-    snprintf(i, sizeof(i), PAYLOAD_BOOT "/cctkfs.img");
-    return ci_file_exists(k) && ci_file_exists(i);
+    char k[256];
+    snprintf(k, sizeof(k), "%s/kernel.bin", g_boot_dir);
+    return ci_file_exists(k) && find_boot_image() != NULL;
 }
 
 static int scan_source(char *kernel, char *img) {
@@ -126,10 +208,16 @@ static int locate_sources(char *kernel, char *img, int *media_mounted) {
     char k[256], i[256];
     *media_mounted = 0;
 
+    /* Older media kept the payload in localrepo.tar.zst; new media carries
+     * kernel.bin + grub/ in cctkfs.img itself. */
+    payload_from_archive();
+
+    const char *image;
     if (check_payload()) {
-        snprintf(kernel, 256, PAYLOAD_BOOT "/kernel.bin");
-        snprintf(img, 256, PAYLOAD_BOOT "/cctkfs.img");
-        printf("using bundled payload (%s)\n", PAYLOAD_BOOT);
+        image = find_boot_image();
+        snprintf(kernel, 256, "%s/kernel.bin", g_boot_dir);
+        snprintf(img, 256, "%s", image);
+        printf("using bundled payload (%s, image %s)\n", g_boot_dir, img);
         return 1;
     }
 
@@ -185,6 +273,28 @@ static int format_part(const struct ci_lpart *p) {
     return -1;
 }
 
+/* Put the compressed archive at the target's root: the boot flow copies it to
+ * /tmp and firmextr streams firmware out of it on demand.  The archive carries
+ * firmware and nothing else, so it is copied verbatim — the old flow re-packed
+ * it to drop the installer media, which no longer travels inside it. */
+static void deploy_localrepo(void) {
+    const char *arc = find_localrepo();
+    if (!arc) {
+        printf("[localrepo] no archive found — target will not carry one\n");
+        return;
+    }
+    char dst[300];
+    snprintf(dst, sizeof(dst), MNT_ROOT "/localrepo.tar.zst");
+    printf("[localrepo] copying the firmware archive: %s -> %s\n", arc, dst);
+    if (ci_copy_file(arc, dst) != 0) {
+        /* A failed copy leaves a partial — or zero-byte — file behind, and
+         * whatever sits here is what the installed system stages into tmpfs.
+         * A file that is not an archive must not survive. */
+        unlink(dst);
+        printf("[localrepo] copy failed\n");
+    }
+}
+
 static int deploy_step(const struct ci_plan *plan, const char *kernel_src,
                        const char *img_src) {
     printf("[deploy] installing kernel and userland image\n");
@@ -198,9 +308,10 @@ static int deploy_step(const struct ci_plan *plan, const char *kernel_src,
         return -1;
     }
     ci_grub_cfg_write(MNT_ROOT);
-    if (ci_deploy_grub_files(plan, MNT_ROOT, PAYLOAD_GRUB) != 0) {
+    if (ci_deploy_grub_files(plan, MNT_ROOT, g_grub_dir) != 0) {
         printf("warning: grub files were not staged\n");
     }
+    deploy_localrepo();
     return 0;
 }
 
@@ -578,7 +689,7 @@ static int step_grub(struct wiz *w) {
         printf("EFI scheme: the loader was staged on the ESP during deploy\n");
         return W_NEXT;
     }
-    if (ci_grub_install(&w->disk, &w->plan, PAYLOAD_GRUB) != 0) {
+    if (ci_grub_install(&w->disk, &w->plan, g_grub_dir) != 0) {
         printf("warning: GRUB could not be embedded — the disk may not boot\n");
         int c = ci_confirm("Continue anyway?", 1);
         if (c < 0)

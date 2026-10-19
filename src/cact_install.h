@@ -70,6 +70,11 @@ void ci_press(void);
 /* run.c */
 int ci_exec(const char *path, char *const argv[]);
 
+/* archive.c */
+/* Re-pack localrepo.tar.zst for the target, dropping every member under
+ * skip_prefix (the installer's own media).  Returns 0 on success. */
+int ci_archive_rebuild(const char *src, const char *dst, const char *skip_prefix);
+
 /* fsops.c */
 int  ci_mkdir_p(const char *path);
 int  ci_file_exists(const char *path);
