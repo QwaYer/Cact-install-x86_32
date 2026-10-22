@@ -83,14 +83,20 @@ static int read_file_all(const char *path, char **out, uint32_t *outlen) {
     return 0;
 }
 
-void ci_grub_cfg_write(const char *root_mnt) {
-    char path[256];
+int ci_grub_cfg_write(const char *root_mnt) {
+    char path[300];
     snprintf(path, sizeof(path), "%s/boot/grub", root_mnt);
-    ci_mkdir_p(path);
+    if (ci_mkdir_p(path) != 0)
+        return -1;
     snprintf(path, sizeof(path), "%s/boot/grub/grub.cfg", root_mnt);
-    ci_write_file(path, GRUB_CFG, (uint32_t)strlen(GRUB_CFG));
+    return ci_write_file(path, GRUB_CFG, (uint32_t)strlen(GRUB_CFG)) == 0 ? 0 : -1;
 }
 
+/*
+ * Put the bootloader files on the target.  Silent by design: the caller owns
+ * the display (a task list), so a stray printf would land under the frame.
+ * Returns 0 on success, -1 when a file could not be staged.
+ */
 int ci_deploy_grub_files(const struct ci_plan *plan, const char *root_mnt,
                          const char *payload_grub) {
     char src[300], dst[300];
@@ -99,35 +105,24 @@ int ci_deploy_grub_files(const struct ci_plan *plan, const char *root_mnt,
         char payload[300], dir[300];
         snprintf(payload, sizeof(payload), "%s/i386-efi/bootia32.efi",
                  payload_grub);
-        if (!ci_file_exists(payload)) {
-            printf("EFI loader payload not found (%s); ESP left without loader\n",
-                   payload);
+        if (!ci_file_exists(payload))
             return -1;
-        }
         snprintf(dir, sizeof(dir), "%s/boot/efi/EFI/BOOT", root_mnt);
-        if (ci_mkdir_p(dir) != 0) {
-            printf("cannot create %s\n", dir);
+        if (ci_mkdir_p(dir) != 0)
             return -1;
-        }
         snprintf(dst, sizeof(dst), "%s/bootia32.efi", dir);
-        if (ci_copy_file(payload, dst) != 0) {
-            printf("failed to copy EFI loader to %s\n", dst);
+        if (ci_copy_file(payload, dst) != 0)
             return -1;
-        }
         snprintf(dst, sizeof(dst), "%s/grub.cfg", dir);
-        if (ci_write_file(dst, GRUB_CFG, (uint32_t)strlen(GRUB_CFG)) != 0) {
-            printf("failed to write %s\n", dst);
+        if (ci_write_file(dst, GRUB_CFG, (uint32_t)strlen(GRUB_CFG)) != 0)
             return -1;
-        }
-        printf("EFI loader staged on the ESP (%s)\n", dir);
         return 0;
     }
 
     snprintf(dst, sizeof(dst), "%s/boot/grub/i386-pc", root_mnt);
-    if (ci_mkdir_p(dst) != 0) {
-        printf("cannot create %s\n", dst);
+    if (ci_mkdir_p(dst) != 0)
         return -1;
-    }
+
     int staged = 0;
     for (int i = 0; BIOS_MOD_FILES[i]; i++) {
         snprintf(src, sizeof(src), "%s/i386-pc/%s", payload_grub,
@@ -136,21 +131,10 @@ int ci_deploy_grub_files(const struct ci_plan *plan, const char *root_mnt,
             continue;
         snprintf(dst, sizeof(dst), "%s/boot/grub/i386-pc/%s", root_mnt,
                  BIOS_MOD_FILES[i]);
-        if (ci_copy_file(src, dst) != 0)
-            printf("warning: failed to stage grub module %s\n",
-                   BIOS_MOD_FILES[i]);
-        else
+        if (ci_copy_file(src, dst) == 0)
             staged++;
     }
-    if (!staged) {
-        printf("no GRUB modules found under %s/i386-pc — run "
-               "'ninja -C build-meson grub-bundle stage-media' and reinstall\n",
-               payload_grub);
-        return -1;
-    }
-    printf("staged %d GRUB modules in %s/boot/grub/i386-pc\n", staged,
-           root_mnt);
-    return 0;
+    return staged ? 0 : -1;
 }
 
 int ci_grub_install(const struct ci_disk *d, const struct ci_plan *plan,

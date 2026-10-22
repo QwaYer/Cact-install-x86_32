@@ -114,9 +114,15 @@ uint64_t ci_probe_capacity(const char *node_path) {
             else
                 hi = mid;
         }
+        close(fd);
+        return lo + 1;
     }
+    /* The doubling ended on the cap, not on a failed read, and CI_MAX_LBA is
+     * still readable: the disk runs past what a 32-bit byte offset addresses.
+     * Falling through to `lo + 1` here reported every disk over 2 GiB as a
+     * 1 GiB one, because lo is the last probe step (1 GiB), not the end. */
     close(fd);
-    return lo + 1;
+    return CI_MAX_LBA + 1;
 }
 
 static uint64_t node_sectors(const char *path) {

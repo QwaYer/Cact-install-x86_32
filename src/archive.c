@@ -1,16 +1,15 @@
 /*
- * archive.c — rebuild localrepo.tar.zst for the installed system.
+ * archive.c — read, list and re-pack localrepo.tar.zst.
  *
- * NOT on the install path any more: since the media bundle (kernel.bin + grub/)
- * moved into cctkfs.img, localrepo.tar.zst carries firmware and nothing else,
- * so deploy_localrepo() copies it verbatim and --gc-sections drops everything
- * below from the installer binary.  Kept because the ability to stream-rebuild
- * an archive is what a slimmer target archive would be built on: it
- * stream-decompresses the source, copies every tar member whose name does not
- * sit under the skipped prefix, and compresses the result with the vendored
- * zstd.
+ * The archive the boot medium hands over is the whole firmware mirror (~500
+ * MB packed).  The live session uses it as-is, but the target should not carry
+ * every firmware blob in existence, so this file can stream a *selection* of
+ * it into a fresh archive: it decompresses the source, copies the tar members
+ * a keep-predicate accepts, and compresses the result with the vendored zstd.
  *
- * Both halves stream, so nothing bigger than the I/O buffers is held in memory.
+ * Both halves stream, so nothing bigger than the I/O buffers is held in memory,
+ * and ci_archive_walk() can hand every header to a caller without unpacking a
+ * single body (that is how the installer lists the firmware groups).
  */
 
 #include "cact_install.h"
@@ -26,7 +25,10 @@
 #include <compat/zstd_lib.h>
 
 #define AR_IOBUF  (128 * 1024)     /* >= ZSTD_DStreamOutSize() */
-#define AR_LEVEL  6
+/* The payload is already-compressed *.zst blobs and raw ucode/GPU blobs, so a
+ * high level buys almost nothing and costs minutes of CPU — the media build
+ * settled on the same trade-off. */
+#define AR_LEVEL  3
 
 /* ── tar header (ustar, see common/ex_archive.c) ─────────────────────────── */
 
@@ -247,11 +249,46 @@ static int ar_copy(struct ar_rd *r, struct ar_wr *w, unsigned long long n) {
     return 0;
 }
 
-/* Re-pack `src` into `dst`, dropping every member under `skip_prefix`
- * (a name like "usr/lib/cact-install/").  Returns 0 on success. */
-int ci_archive_rebuild(const char *src, const char *dst, const char *skip_prefix) {
-    size_t skip_len = strlen(skip_prefix);
+/* Walk the members of the archive without unpacking anything: every ustar
+ * header is handed to `cb`, and only the bodies are skipped over.  A non-zero
+ * return from `cb` stops the walk early (used to keep the group scan short). */
+int ci_archive_walk(const char *src, ci_arc_cb cb, void *ud) {
+    int in = open(src, O_RDONLY);
+    if (in < 0) return -1;
 
+    struct ar_rd r;
+    if (ar_rd_open(&r, in) != 0) { ar_rd_close(&r); close(in); return -1; }
+
+    unsigned char blk[AR_BLOCK];
+    int rc = 0;
+    for (;;) {
+        if (ar_rd_read(&r, blk, AR_BLOCK) != AR_BLOCK) { rc = -1; break; }
+        if (ar_is_zero(blk)) break;
+
+        const struct ar_tarhdr *h = (const struct ar_tarhdr *)blk;
+        char member[512];
+        ar_tar_name(h, member, sizeof(member));
+        unsigned long long size = ar_tar_size(h->size);
+        unsigned long long pad = (AR_BLOCK - (size % AR_BLOCK)) % AR_BLOCK;
+
+        if (cb && cb(member, h->typeflag, size, ud) != 0) {
+            rc = 0;
+            break;
+        }
+        if (ar_rd_skip(&r, size + pad) != 0) { rc = -1; break; }
+    }
+
+    ar_rd_close(&r);
+    close(in);
+    return rc;
+}
+
+/* Re-pack `src` into `dst`, keeping only the members `keep` accepts (a NULL
+ * keep keeps everything).  Headers are copied verbatim — the source is already
+ * valid ustar — and both halves stream, so nothing bigger than the I/O buffers
+ * is ever held in memory. */
+int ci_archive_repack(const char *src, const char *dst,
+                      ci_arc_keep keep, void *ud) {
     int in = open(src, O_RDONLY);
     if (in < 0) return -1;
     int out = open(dst, O_WRONLY | O_CREAT | O_TRUNC, 0644);
@@ -278,11 +315,10 @@ int ci_archive_rebuild(const char *src, const char *dst, const char *skip_prefix
         unsigned long long size = ar_tar_size(h->size);
         unsigned long long pad = (AR_BLOCK - (size % AR_BLOCK)) % AR_BLOCK;
 
-        if (skip_len && strncmp(member, skip_prefix, skip_len) == 0) {
+        if (keep && !keep(member, h->typeflag, ud)) {
             if (ar_rd_skip(&r, size + pad) != 0) { rc = -1; break; }
             continue;
         }
-        /* Copy the header verbatim (it is already valid ustar), then the body. */
         if (ar_wr_write(&w, blk, AR_BLOCK) != 0) { rc = -1; break; }
         if (ar_copy(&r, &w, size + pad) != 0) { rc = -1; break; }
     }
@@ -294,4 +330,17 @@ int ci_archive_rebuild(const char *src, const char *dst, const char *skip_prefix
     close(in);
     close(out);
     return rc;
+}
+
+static int ar_skip_prefix_keep(const char *name, char type, void *ud) {
+    (void)type;
+    const char *prefix = (const char *)ud;
+    size_t l = prefix ? strlen(prefix) : 0;
+    return !(l && strncmp(name, prefix, l) == 0);
+}
+
+/* Re-pack `src` into `dst`, dropping every member under `skip_prefix`
+ * (a name like "usr/lib/cact-install/").  Returns 0 on success. */
+int ci_archive_rebuild(const char *src, const char *dst, const char *skip_prefix) {
+    return ci_archive_repack(src, dst, ar_skip_prefix_keep, (void *)skip_prefix);
 }

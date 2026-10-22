@@ -1,131 +1,65 @@
+/*
+ * ui.c — the installer's prompts, expressed through the full-screen TUI.
+ *
+ * These wrappers keep the small numbered/line-oriented interface the wizard
+ * steps were written against, so a step that just needs "pick one" or "type a
+ * value" stays a couple of lines while the screen it draws is the real TUI
+ * (header, step counter, scrolling body, reverse-video selection).
+ */
+
 #include "cact_install.h"
+#include "tui.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <termios.h>
+#include <stdlib.h>
 
-static struct termios saved_term;
-static int term_saved;
-static int canonical_ok;
+static struct tui *g_tui;
 
 void ci_term_init(void) {
-    canonical_ok = 0;
-    if (tcgetattr(STDIN_FILENO, &saved_term) == 0) {
-        struct termios t = saved_term;
-        t.c_lflag |= (ICANON | ECHO);
-        t.c_lflag &= ~(unsigned int)ISIG;
-        if (tcsetattr(STDIN_FILENO, TCSANOW, &t) == 0) {
-            term_saved = 1;
-            canonical_ok = 1;
-        }
-    }
+    g_tui = tui_open();
 }
 
 void ci_term_done(void) {
-    if (term_saved) {
-        tcsetattr(STDIN_FILENO, TCSANOW, &saved_term);
-        term_saved = 0;
-    }
+    tui_close(g_tui);
+    g_tui = NULL;
 }
 
-static void out(const char *s) {
-    write(STDOUT_FILENO, s, strlen(s));
+struct tui *ci_tui(void) {
+    return g_tui;
 }
 
-static void trim_cr(char *s) {
-    int n = (int)strlen(s);
-    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r'))
-        s[--n] = '\0';
-}
-
-static int read_line_canonical(const char *prompt, char *buf, int size) {
-    if (prompt)
-        out(prompt);
-    if (!fgets(buf, size, stdin))
+int ci_menu(const char *title, const char **items, int n) {
+    if (!g_tui || n <= 0)
         return -1;
-    trim_cr(buf);
-    return (int)strlen(buf);
+    int sel = 0;
+    if (tui_menu(g_tui, title, NULL, NULL,
+                 "Up/Down move   Enter select   0/Left back",
+                 items, n, &sel) != 0)
+        return 0;                    /* backed out */
+    return sel + 1;
 }
 
-/* Repaint an edited line.  This console has no '\b' and no erase-to-EOL, so
- * the tail is overwritten with spaces and the cursor is brought back with
- * '\r' — the same technique the shell uses. */
-static void redraw_raw(const char *prompt, const char *buf, int len,
-                       int prev_len) {
-    if (!prompt)
-        return;
-    int max = len > prev_len ? len : prev_len;
-    out("\r");
-    out(prompt);
-    if (len > 0)
-        write(STDOUT_FILENO, buf, (size_t)len);
-    for (int i = len; i < max + 1; i++)
-        write(STDOUT_FILENO, " ", 1);
-    out("\r");
-    out(prompt);
-    if (len > 0)
-        write(STDOUT_FILENO, buf, (size_t)len);
-}
-
-static int read_line_raw(const char *prompt, char *buf, int size) {
-    int n = 0;
-    int shown = 0;                 /* characters currently on screen */
-    if (prompt)
-        out(prompt);
-    for (;;) {
-        char c;
-        ssize_t r = read(STDIN_FILENO, &c, 1);
-        if (r <= 0) {
-            if (n == 0) {
-                if (prompt)
-                    out("\n");
-                return -1;
-            }
-            break;
-        }
-        if (c == '\n' || c == '\r') {
-            out("\n");
-            break;
-        }
-        if (c == '\b' || c == 0x7f) {
-            if (n > 0) {
-                n--;
-                redraw_raw(prompt, buf, n, shown);
-                shown = n;
-            }
-            continue;
-        }
-        if ((unsigned char)c < 0x20)
-            continue;
-        if (n < size - 1) {
-            buf[n++] = c;
-            write(STDOUT_FILENO, &c, 1);
-            shown = n;
-        }
-    }
-    buf[n] = '\0';
-    return n;
-}
-
-static int read_line(const char *prompt, char *buf, int size) {
-    if (canonical_ok)
-        return read_line_canonical(prompt, buf, size);
-    return read_line_raw(prompt, buf, size);
+int ci_confirm(const char *q, int def) {
+    if (!g_tui)
+        return def;
+    return tui_confirm(g_tui, "Confirm", NULL, q, def);
 }
 
 int ci_prompt(const char *q, char *buf, int size) {
-    if (read_line(q, buf, size) < 0)
+    if (!g_tui)
+        return 0;
+    buf[0] = '\0';
+    if (tui_input(g_tui, "Input", NULL, q, buf, size) != 0)
         return 0;
     return 1;
 }
 
 long ci_prompt_num(const char *q, long def) {
+    char label[128];
     char buf[32];
-    char label[96];
-    snprintf(label, sizeof(label), "%s [%ld] ", q, def);
-    if (read_line(label, buf, sizeof(buf)) < 0)
+    snprintf(label, sizeof(label), "%s [%ld]", q, def);
+    if (!ci_prompt(label, buf, sizeof(buf)))
         return def;
     if (!buf[0])
         return def;
@@ -136,50 +70,9 @@ long ci_prompt_num(const char *q, long def) {
     return v;
 }
 
-int ci_menu(const char *title, const char **items, int n) {
-    if (title && title[0])
-        out(title);
-    for (int i = 0; i < n; i++) {
-        char line[128];
-        snprintf(line, sizeof(line), "  %d) %s\n", i + 1, items[i]);
-        out(line);
-    }
-    for (;;) {
-        char buf[32];
-        char q[48];
-        snprintf(q, sizeof(q), "Choice [1-%d, 0 = back]: ", n);
-        if (read_line(q, buf, sizeof(buf)) < 0)
-            return -1;             /* input lost: no more choices possible */
-        if (!buf[0])
-            continue;
-        char *end;
-        long v = strtol(buf, &end, 10);
-        if (end == buf)
-            continue;
-        if (v == 0)
-            return 0;
-        if (v >= 1 && v <= n)
-            return (int)v;
-    }
-}
-
-int ci_confirm(const char *q, int def) {
-    for (;;) {
-        char label[256];
-        snprintf(label, sizeof(label), "%s %s", q, def ? "[Y/n] " : "[y/N] ");
-        char buf[16];
-        if (read_line(label, buf, sizeof(buf)) < 0)
-            return -1;             /* input lost: let the caller unwind */
-        if (!buf[0])
-            return def;
-        if (buf[0] == 'y' || buf[0] == 'Y')
-            return 1;
-        if (buf[0] == 'n' || buf[0] == 'N')
-            return 0;
-    }
-}
-
 void ci_press(void) {
-    char buf[8];
-    read_line("Press Enter to continue...", buf, sizeof(buf));
+    static const char *lines[] = { "Press Enter to continue." };
+    if (!g_tui)
+        return;
+    tui_notice(g_tui, "Continue", NULL, NULL, "Enter continue", lines, 1);
 }

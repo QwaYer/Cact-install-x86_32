@@ -10,6 +10,17 @@
 #define MODE_DIR  0755
 #define MODE_FILE 0644
 
+void ci_fmt_bytes(uint64_t bytes, char *out, int n) {
+    if (bytes >= (1024ull * 1024 * 1024))
+        snprintf(out, (size_t)n, "%u GiB", (unsigned)(bytes >> 30));
+    else if (bytes >= (1024ull * 1024))
+        snprintf(out, (size_t)n, "%u MiB", (unsigned)(bytes >> 20));
+    else if (bytes >= 1024)
+        snprintf(out, (size_t)n, "%u KiB", (unsigned)(bytes >> 10));
+    else
+        snprintf(out, (size_t)n, "%u B", (unsigned)bytes);
+}
+
 int ci_file_exists(const char *path) {
     struct stat st;
     return stat(path, &st) == 0;
